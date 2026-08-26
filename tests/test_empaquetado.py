@@ -1,17 +1,15 @@
-"""La version del paquete vive en TRES lugares y no pueden divergir.
+"""La version del paquete vive en DOS lugares y no pueden divergir.
 
-`pyproject.toml` (PEP 621), `setup.cfg` (formato clasico) y
-`oys_connectors.__version__`. La duplicacion es deliberada: DANTE corre pip
-22.0.2, que no lee bien la metadata PEP 621 y construye el wheel como
-`UNKNOWN-0.0.0` — instala algo con nombre desconocido y sin dejar el modulo
-importable, o sea que **falla en silencio**. `setup.cfg` es lo que evita eso.
+`pyproject.toml` (PEP 621) y `oys_connectors.__version__`. Antes eran tres:
+habia un `setup.cfg` con metadata clasica que se elimino en v0.1.2 — ver el
+comentario en `[build-system]` de `pyproject.toml` y el commit de esa version.
 
-El precio de tener dos formatos es que pueden desincronizarse. Este test es lo
-que hace que ese error sea ruidoso en vez de aparecer como "la version instalada
-no es la que dice el repo" tres semanas despues.
+Este test tambien cubre algo que un `pip install` local NO detecta: que el wheel
+lleve el codigo y no solo metadata. Eso paso de verdad en DANTE con v0.1.1 (wheel
+de 1043 B, `top_level.txt` vacio, `ModuleNotFoundError` al importar) y un build
+local no lo reprodujo, porque local usa build-tools modernas.
 """
 
-import configparser
 import pathlib
 import re
 
@@ -21,8 +19,12 @@ from oys_connectors.odoo import VERSION as VERSION_CONECTOR
 RAIZ = pathlib.Path(__file__).resolve().parents[1]
 
 
+def _pyproject_texto():
+    return (RAIZ / "pyproject.toml").read_text(encoding="utf-8")
+
+
 def _version_pyproject():
-    txt = (RAIZ / "pyproject.toml").read_text(encoding="utf-8")
+    txt = _pyproject_texto()
     try:
         import tomllib  # 3.11+
         return tomllib.loads(txt)["project"]["version"]
@@ -34,43 +36,56 @@ def _version_pyproject():
         return m.group(1)
 
 
-def _cfg():
-    c = configparser.ConfigParser()
-    c.read(RAIZ / "setup.cfg", encoding="utf-8")
-    return c
-
-
-def test_las_tres_versiones_del_paquete_coinciden():
+def test_las_dos_versiones_del_paquete_coinciden():
     py = _version_pyproject()
-    cfg = _cfg()["metadata"]["version"]
     mod = oys_connectors.__version__
-    assert py == cfg == mod, (
-        "versiones desincronizadas -> pyproject=%s setup.cfg=%s __version__=%s"
-        % (py, cfg, mod)
+    assert py == mod, (
+        "versiones desincronizadas -> pyproject=%s __version__=%s" % (py, mod)
     )
 
 
-def test_el_nombre_coincide_en_los_dos_formatos():
-    txt = (RAIZ / "pyproject.toml").read_text(encoding="utf-8")
-    m = re.search(r'^\s*name\s*=\s*"([^"]+)"', txt, re.M)
-    assert m
-    assert m.group(1) == _cfg()["metadata"]["name"] == "oys-connectors"
+def test_no_reaparecio_setup_cfg():
+    """`setup.cfg` se elimino en v0.1.2 y no debe volver.
+
+    Documentaba una causa equivocada ("pip viejo no lee metadata moderna") y su
+    efecto real fue peor que el problema: con el presente, las build-tools viejas
+    de DANTE tomaban la via clasica, y como no declaraba paquetes, el wheel salia
+    **sin una sola linea de codigo**. Este test existe para que nadie lo resucite
+    leyendo aquel comentario y creyendo que ayudaba.
+    """
+    assert not (RAIZ / "setup.cfg").exists(), (
+        "reaparecio setup.cfg: ver el commit de v0.1.2 antes de agregarlo"
+    )
+
+
+def test_build_system_pide_wheel_explicito():
+    """Sin `wheel` en `requires`, las tools viejas construyen por una via legacy."""
+    txt = _pyproject_texto()
+    m = re.search(r"^\s*requires\s*=\s*\[([^\]]*)\]", txt, re.M)
+    assert m, "no encontre requires en [build-system]"
+    req = m.group(1)
+    assert "setuptools" in req and "wheel" in req
+
+
+def test_el_paquete_declara_donde_estan_los_modulos():
+    """Lo que faltaba cuando el wheel salio vacio.
+
+    Si nadie declara los paquetes, setuptools no encuentra `oys_connectors/` y
+    empaqueta solo `dist-info`. El sintoma es un `ModuleNotFoundError` DESPUES de
+    un `Successfully installed`, que es de los peores: `pip show` da verde.
+    """
+    txt = _pyproject_texto()
+    assert "[tool.setuptools.packages.find]" in txt
+    assert "oys_connectors" in txt
 
 
 def test_la_version_del_conector_es_independiente_de_la_del_paquete():
     """No es un error que difieran: el conector versiona su CONTRATO.
 
-    Si `setup.cfg` sube el paquete por un cambio de empaquetado, el contrato con
-    Odoo no cambio y `oys_connectors.odoo.VERSION` no tiene por que moverse.
-    Este test documenta esa independencia para que nadie las "sincronice"
-    creyendo que es un descuido.
+    Si el paquete sube por un cambio de empaquetado, el contrato con Odoo no
+    cambio y `oys_connectors.odoo.VERSION` no tiene por que moverse. Este test
+    documenta esa independencia para que nadie las "sincronice" creyendo que es
+    un descuido.
     """
     assert re.fullmatch(r"\d+\.\d+\.\d+", VERSION_CONECTOR)
     assert re.fullmatch(r"\d+\.\d+\.\d+", oys_connectors.__version__)
-
-
-def test_setup_cfg_declara_lo_minimo_para_pip_viejo():
-    """Es lo que evita el `UNKNOWN-0.0.0` con pip 22."""
-    md = _cfg()["metadata"]
-    assert md["name"].strip()
-    assert md["version"].strip()

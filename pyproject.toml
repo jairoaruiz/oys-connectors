@@ -1,10 +1,12 @@
 [build-system]
-requires = ["setuptools>=61"]
+# "wheel" explicito: sin el, las build-tools viejas del sistema de DANTE
+# construyen el wheel por una via legacy que no empaqueta el codigo.
+requires = ["setuptools>=61", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "oys-connectors"
-version = "0.1.1"
+version = "0.1.2"
 description = "Conectores compartidos del ecosistema O&S / Ezytec (Odoo, y mas adelante Zabbix y WhatsApp)."
 requires-python = ">=3.10"
 dependencies = []
