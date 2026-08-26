@@ -1,0 +1,12 @@
+.venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+build/
+dist/
+
+# Credenciales: este paquete NUNCA trae un .env. Cada repo consumidor pasa la
+# ruta del suyo (D13: no se comparte identidad entre repos).
+*.env
+credentials/

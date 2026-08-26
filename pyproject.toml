@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "oys-connectors"
+version = "0.1.0"
+description = "Conectores compartidos del ecosistema O&S / Ezytec (Odoo, y mas adelante Zabbix y WhatsApp)."
+requires-python = ">=3.10"
+dependencies = []
+
+# Sin dependencias a proposito: el conector de Odoo usa xmlrpc.client, que es
+# stdlib. Agregar una dependencia aca obliga a instalarla en DANTE, y DANTE
+# corre los timers del NOC.
+
+[project.optional-dependencies]
+dev = ["pytest>=7"]
+
+[tool.setuptools.packages.find]
+include = ["oys_connectors*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

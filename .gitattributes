@@ -1,0 +1,9 @@
+# Este paquete se instala en DANTE (Linux), asi que el final de linea no puede
+# depender de la config local de cada maquina. Se desarrolla desde equipos
+# Windows: con core.autocrlf=false en cualquiera de ellos, un commit meteria CRLF.
+#
+# Mismo patron ya usado en noc-claudeagent y AgenteOyS.
+*.py    text eol=lf
+*.toml  text eol=lf
+*.md    text eol=lf
+*.sh    text eol=lf
