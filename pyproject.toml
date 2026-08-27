@@ -6,7 +6,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "oys-connectors"
-version = "0.1.2"
+version = "0.2.1"
 description = "Conectores compartidos del ecosistema O&S / Ezytec (Odoo, y mas adelante Zabbix y WhatsApp)."
 requires-python = ">=3.10"
 dependencies = []

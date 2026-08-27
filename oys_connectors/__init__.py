@@ -10,4 +10,4 @@ consumidor le pasa la ruta de SU propio `.env`. Un conector que leyera un `.env`
 comun volveria a fusionar justo lo que esa decision separa.
 """
 
-__version__ = "0.1.2"
+__version__ = "0.2.1"

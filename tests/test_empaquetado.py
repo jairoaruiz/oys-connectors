@@ -37,6 +37,22 @@ def _version_pyproject():
 
 
 def test_las_dos_versiones_del_paquete_coinciden():
+    """`pyproject.toml` y `__version__` no pueden divergir ENTRE SI.
+
+    **LIMITE, y hay que tenerlo presente: este test verifica SINCRONIA, no
+    ACTUALIDAD.** Si nadie sube ninguno de los dos, quedan coherentes y el test
+    pasa tan verde como siempre.
+
+    No es teorico: **v0.2.0 se publico con la metadata en 0.1.2**. El tag traia
+    el conector de Zabbix entero y los 69 tests pasaron, porque los dos archivos
+    seguian de acuerdo — en el numero viejo. Esa clase de error no la puede
+    atrapar un test de sincronia: solo lo ve el checklist de release, comparando
+    el tag que se va a crear contra la version que declara el paquete.
+
+    Lo que este test SI evita es el otro error, mas facil de cometer: subir uno
+    y olvidar el otro, que deja el paquete instalandose con un numero y
+    reportando otro.
+    """
     py = _version_pyproject()
     mod = oys_connectors.__version__
     assert py == mod, (
