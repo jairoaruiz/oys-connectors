@@ -51,6 +51,21 @@ METODOS_LECTURA = frozenset({
     "trigger.get",
 })
 
+#: Metodos que deben viajar **SIN** header de autorizacion.
+#:
+#: Zabbix 7.0 rechaza `apiinfo.version` si lleva `Authorization`, con
+#: *"The apiinfo.version method must be called without authorization header."*
+#: O sea que el metodo estaba en la whitelist pero era **inllamable**: el unico
+#: consumidor real (el selftest del MCP) tenia que pasar por su propio
+#: transporte para invocarlo.
+#:
+#: Es un CONJUNTO y no un parametro `auth=False` a proposito: asi la excepcion
+#: queda atada al metodo, no a la voluntad de quien llama. Con un booleano
+#: cualquiera podria mandar `host.get` sin token, y eso no falla de forma obvia
+#: — devuelve un error de permisos que se lee como problema de Zabbix.
+#: Aca no hay manera de pedirlo: `_rpc` lo decide solo, leyendo el metodo.
+METODOS_SIN_AUTH = frozenset({"apiinfo.version"})
+
 
 def cargar_env(path):
     """Lee un `.env` a dict. **NO toca `os.environ`.**
@@ -117,6 +132,11 @@ class ZabbixClient:
 
         Zabbix 7.0 dejo de aceptar el token en `params.auth`; va como
         `Authorization: Bearer <token>`.
+
+        **Con una excepcion, y no es configurable:** los metodos de
+        `METODOS_SIN_AUTH` viajan sin ese header porque Zabbix los rechaza si lo
+        llevan. Esta funcion no acepta ningun parametro para forzar el envio sin
+        token: se decide por el nombre del metodo.
         """
         if metodo not in METODOS_LECTURA:
             raise ZabbixReadOnlyError(
@@ -125,12 +145,11 @@ class ZabbixClient:
         cuerpo = json.dumps({
             "jsonrpc": "2.0", "method": metodo, "params": params or {}, "id": 1,
         }).encode("utf-8")
+        headers = {"Content-Type": "application/json-rpc"}
+        if metodo not in METODOS_SIN_AUTH:
+            headers["Authorization"] = "Bearer " + self._token
         req = urllib.request.Request(
-            self.url, data=cuerpo, method="POST",
-            headers={
-                "Content-Type": "application/json-rpc",
-                "Authorization": "Bearer " + self._token,
-            })
+            self.url, data=cuerpo, method="POST", headers=headers)
         with urllib.request.urlopen(req, timeout=self.timeout) as r:
             datos = json.loads(r.read().decode("utf-8"))
         if "error" in datos:
@@ -176,6 +195,18 @@ class ZabbixClient:
 
     # ------------------------------------------------------------ lectura
 
+    def version_api(self):
+        """Version de la API de Zabbix. **No manda el token.**
+
+        Sirve de sonda de alcance: responde aunque el token este vencido, asi
+        que un `version_api()` que anda junto a un `listar_hosts()` que falla
+        senala credencial, no red.
+
+        Existe para que la excepcion de `METODOS_SIN_AUTH` sea alcanzable desde
+        la API publica: antes el unico camino era llamar `_rpc` a mano.
+        """
+        return self._rpc("apiinfo.version")
+
     def listar_hosts(self, limit=500):
         """Hosts con `hostid`, `host` y `name`.
 
@@ -216,11 +247,26 @@ class ZabbixClient:
                     break
         return salida
 
-    def eventos(self, time_from, time_till, limit=1000, severidades=None):
+    def eventos(self, time_from, time_till, limit=1000, severidades=None,
+                solo_problemas=False):
         """Eventos historicos de triggers, con su host resuelto.
 
         Para correlacionar incidentes YA CERRADOS: `problem.get` solo trae lo que
         sigue activo.
+
+        `solo_problemas=True` deja unicamente los eventos de tipo PROBLEM
+        (`value == "1"`) y descarta los de resolucion (`value == "0"`). **No es
+        cosmetico:** medido el 2026-08-27 sobre 6 h reales, de 400 eventos 198
+        eran problemas y **202 resoluciones**. Sin filtrar, el resultado se mas
+        que duplica y una resolucion es indistinguible de una alarma nueva para
+        quien correlaciona. Cambia el veredicto, no solo el volumen.
+
+        El default es `False` para no alterar lo que este metodo ya devuelve.
+        Quien correlaciona incidentes casi siempre quiere `True`.
+
+        El filtro se aplica ANTES de resolver hosts: resolver un evento que se va
+        a descartar es un `trigger.get` de mas. La salida es identica en
+        cualquier orden, porque el criterio no mira `hosts`.
         """
         params = {
             "output": ["eventid", "objectid", "name", "severity", "clock", "value"],
@@ -234,17 +280,33 @@ class ZabbixClient:
         }
         if severidades:
             params["severities"] = list(severidades)
-        return self._resolver_hosts(self._rpc("event.get", params))
+        eventos = self._rpc("event.get", params)
+        if solo_problemas:
+            eventos = [e for e in eventos if str(e.get("value")) == "1"]
+        return self._resolver_hosts(eventos)
 
-    def eventos_por_host(self, nombre_contiene, time_from, time_till, limit=1000):
+    def eventos_por_host(self, nombre_contiene, time_from, time_till, limit=2000,
+                         solo_problemas=False):
         """Eventos historicos acotados por nombre de host.
 
         Mismo criterio que `problemas_por_host`: se filtra por host resuelto,
-        jamas por IP.
+        jamas por IP. Y mismo `solo_problemas` que `eventos()`.
+
+        **El `limit` por defecto es 2000 y no 1000** porque el filtro por host
+        ocurre DESPUES de traer los datos: un limite ajustado recorta la ventana
+        antes de filtrar, y una sede con poca actividad puede quedar en cero no
+        porque no tuviera eventos, sino porque no entro en el corte. 2000 es el
+        valor que el unico consumidor real —la tool `zabbix_events_by_host` del
+        MCP— usa en produccion desde que existe.
+
+        Ojo: **no** es "consistencia con `problemas_por_host`", que usa 500. Esa
+        asimetria queda a proposito — los eventos historicos de una ventana son
+        muchos mas que los problemas activos de un instante.
         """
         aguja = nombre_contiene.strip().lower()
         salida = []
-        for e in self.eventos(time_from, time_till, limit=limit):
+        for e in self.eventos(time_from, time_till, limit=limit,
+                              solo_problemas=solo_problemas):
             for h in e.get("hosts", []):
                 if aguja in (h.get("host", "") + " " + h.get("name", "")).lower():
                     salida.append(e)

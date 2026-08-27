@@ -16,10 +16,11 @@ acuerde de no llamar algo.
 RECURSO = "zabbix:jsonrpc"
 MODO = "ro"
 DUENO = True
-VERSION = "0.1.0"
+VERSION = "0.2.0"
 
 from .client import (  # noqa: E402
     METODOS_LECTURA,
+    METODOS_SIN_AUTH,
     ZabbixClient,
     ZabbixError,
     ZabbixReadOnlyError,
@@ -29,6 +30,6 @@ from .client import (  # noqa: E402
 # interno. Es la lista de lo que este conector PUEDE hacer, y quien lo audite
 # tiene que poder leerla sin abrir client.py.
 __all__ = [
-    "RECURSO", "MODO", "DUENO", "VERSION", "METODOS_LECTURA",
+    "RECURSO", "MODO", "DUENO", "VERSION", "METODOS_LECTURA", "METODOS_SIN_AUTH",
     "ZabbixClient", "ZabbixError", "ZabbixReadOnlyError",
 ]

@@ -18,6 +18,7 @@ import pytest
 from oys_connectors.zabbix import (
     DUENO,
     METODOS_LECTURA,
+    METODOS_SIN_AUTH,
     MODO,
     RECURSO,
     VERSION,
@@ -41,7 +42,7 @@ def test_contrato_del_conector():
     assert RECURSO == "zabbix:jsonrpc"
     assert MODO == "ro"
     assert DUENO is True
-    assert VERSION == "0.1.0"
+    assert VERSION == "0.2.0"
 
 
 # ------------------------------------------------- MODO="ro" es estructural
@@ -183,3 +184,64 @@ def test_cargar_env_no_contamina_os_environ(tmp_path, monkeypatch):
     env = cargar_env(str(f))
     assert env["ZABBIX_URL"] == "http://x.local"
     assert "ZABBIX_URL" not in os.environ
+
+
+# ------------------- la excepcion de auth: atada al METODO, no al llamador
+
+def test_apiinfo_version_viaja_SIN_header_de_autorizacion(cli, fake_rpc):
+    """Zabbix 7.0 lo rechaza si lleva `Authorization`:
+    *"The apiinfo.version method must be called without authorization header."*
+
+    Estaba en `METODOS_LECTURA` desde el principio pero era **inllamable**: el
+    transporte mandaba el header siempre.
+    """
+    fake_rpc.responder("apiinfo.version", "7.0.27")
+    assert cli.version_api() == "7.0.27"
+    h = fake_rpc.headers_vistos[0]
+    assert (h.get("Authorization") or h.get("authorization")) is None
+
+
+def test_todos_los_demas_metodos_SIGUEN_llevando_el_header(cli, fake_rpc):
+    """La otra mitad del test de arriba: la excepcion es de UNO, no de todos."""
+    llamadas = (
+        ("listar_hosts", lambda: cli.listar_hosts()),
+        ("problemas_activos", lambda: cli.problemas_activos()),
+        ("eventos", lambda: cli.eventos(1, 2)),
+        ("grupos_de_hosts", lambda: cli.grupos_de_hosts()),
+        ("detalle_trigger", lambda: cli.detalle_trigger("555")),
+        ("host_por_ip", lambda: cli.host_por_ip("10.0.0.1")),
+    )
+    for nombre, llamar in llamadas:
+        fake_rpc.headers_vistos.clear()
+        llamar()
+        assert fake_rpc.headers_vistos, "%s no salio a la red" % nombre
+        for h in fake_rpc.headers_vistos:
+            auth = h.get("Authorization") or h.get("authorization")
+            assert auth == "Bearer tok-de-prueba", "%s perdio el header" % nombre
+
+
+def test_la_excepcion_no_se_puede_pedir_desde_el_llamador():
+    """No hay `auth=False` a proposito.
+
+    Con un booleano, cualquiera podria mandar `host.get` sin token: eso no falla
+    de forma obvia, devuelve un error de permisos que se lee como problema de
+    Zabbix. La excepcion se decide leyendo el nombre del metodo, y no hay
+    parametro que la habilite.
+    """
+    sig = inspect.signature(ZabbixClient._rpc)
+    assert list(sig.parameters) == ["self", "metodo", "params"]
+
+
+def test_metodos_sin_auth_es_minimo_y_subconjunto_de_la_whitelist():
+    """Si crece, que sea una decision visible en el diff."""
+    assert METODOS_SIN_AUTH == frozenset({"apiinfo.version"})
+    assert METODOS_SIN_AUTH <= METODOS_LECTURA
+
+
+def test_un_metodo_prohibido_no_se_cuela_por_la_via_sin_auth(cli, monkeypatch):
+    """La whitelist se evalua ANTES que la excepcion de auth."""
+    def explota(*a, **k):  # pragma: no cover
+        raise AssertionError("salio a la red con un metodo prohibido")
+    monkeypatch.setattr("urllib.request.urlopen", explota)
+    with pytest.raises(ZabbixReadOnlyError):
+        cli._rpc("host.create", {})

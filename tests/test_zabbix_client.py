@@ -172,3 +172,94 @@ def test_ip_desconocida_tambien_es_AMBIGUA(cli, fake_rpc):
 def test_grupos_de_hosts_acepta_filtrar_por_hostids(cli, fake_rpc):
     cli.grupos_de_hosts(hostids=["10", "20"])
     assert fake_rpc.params_de("host.get")["hostids"] == ["10", "20"]
+
+
+# ------------------------ solo_problemas: PROBLEM vs evento de resolucion
+
+#: Mezcla deliberada: 2 eventos PROBLEM (`value="1"`) y 3 de resolucion
+#: (`value="0"`). La proporcion imita lo medido en produccion el 2026-08-27 —de
+#: 400 eventos, 198 problemas y 202 resoluciones—, o sea que NO filtrar mas que
+#: duplica el resultado. Todos con el mismo `objectid` para que resuelvan al
+#: mismo host y el filtro por sede pueda distinguirse del filtro por `value`.
+_MEZCLA = [
+    {"eventid": "1", "objectid": FakeRPC.TRIGGER_ID, "name": "caida A",
+     "severity": "4", "clock": "1756000001", "value": "1"},
+    {"eventid": "2", "objectid": FakeRPC.TRIGGER_ID, "name": "recuperado A",
+     "severity": "4", "clock": "1756000002", "value": "0"},
+    {"eventid": "3", "objectid": FakeRPC.TRIGGER_ID, "name": "caida B",
+     "severity": "5", "clock": "1756000003", "value": "1"},
+    {"eventid": "4", "objectid": FakeRPC.TRIGGER_ID, "name": "recuperado B",
+     "severity": "5", "clock": "1756000004", "value": "0"},
+    {"eventid": "5", "objectid": FakeRPC.TRIGGER_ID, "name": "recuperado C",
+     "severity": "3", "clock": "1756000005", "value": "0"},
+]
+
+#: Igual, pero las resoluciones cuelgan de OTRO trigger. Sirve para ver si el
+#: filtro corre antes o despues de resolver hosts: si corre antes, el
+#: `trigger.get` nunca ve el id 999.
+_MEZCLA_IDS = [
+    {"eventid": "1", "objectid": FakeRPC.TRIGGER_ID, "name": "caida A",
+     "severity": "4", "clock": "1756000001", "value": "1"},
+    {"eventid": "2", "objectid": "999", "name": "recuperado A",
+     "severity": "4", "clock": "1756000002", "value": "0"},
+]
+
+
+def test_eventos_sin_solo_problemas_devuelve_todo(cli, fake_rpc):
+    """Default `False`: no altera lo que este metodo ya devolvia."""
+    fake_rpc.responder("event.get", _MEZCLA)
+    ev = cli.eventos(1, 2)
+    assert len(ev) == 5
+    assert sorted({e["value"] for e in ev}) == ["0", "1"]
+
+
+def test_eventos_con_solo_problemas_descarta_las_resoluciones(cli, fake_rpc):
+    fake_rpc.responder("event.get", _MEZCLA)
+    ev = cli.eventos(1, 2, solo_problemas=True)
+    assert [e["eventid"] for e in ev] == ["1", "3"]
+    assert all(e["value"] == "1" for e in ev)
+
+
+def test_solo_problemas_arranca_en_False(cli):
+    """Explicito, no por descuido: subirlo a `True` cambiaria el resultado de
+    cualquier consumidor que hoy llama sin el parametro."""
+    import inspect
+    p = inspect.signature(ZabbixClient.eventos).parameters["solo_problemas"]
+    assert p.default is False
+
+
+def test_el_filtro_de_value_corre_ANTES_de_resolver_hosts(cli, fake_rpc):
+    """Resolver un evento que se va a descartar es un `trigger.get` de mas.
+
+    Con `solo_problemas=True` el trigger de la resolucion (999) no debe llegar
+    nunca al segundo paso.
+    """
+    fake_rpc.responder("event.get", _MEZCLA_IDS)
+    cli.eventos(1, 2, solo_problemas=True)
+    assert fake_rpc.params_de("trigger.get")["triggerids"] == [FakeRPC.TRIGGER_ID]
+
+    fake_rpc.llamadas.clear()
+    cli.eventos(1, 2, solo_problemas=False)
+    # sorted() sobre strings: "555" antes que "999".
+    assert fake_rpc.params_de("trigger.get")["triggerids"] == [FakeRPC.TRIGGER_ID, "999"]
+
+
+def test_eventos_por_host_hereda_solo_problemas(cli, fake_rpc):
+    """Mismo criterio que `eventos()`, sobre los eventos ya filtrados por sede."""
+    fake_rpc.responder("event.get", _MEZCLA)
+    assert len(cli.eventos_por_host("PRIMAVERA", 1, 2)) == 5
+    assert len(cli.eventos_por_host("PRIMAVERA", 1, 2, solo_problemas=True)) == 2
+
+
+def test_eventos_por_host_pide_2000_por_defecto(cli, fake_rpc):
+    """El filtro por host ocurre DESPUES de traer los datos, asi que un limite
+    corto puede dejar una sede en cero por recorte y no por ausencia."""
+    cli.eventos_por_host("PRIMAVERA", 1, 2)
+    assert fake_rpc.params_de("event.get")["limit"] == 2000
+
+
+def test_problemas_por_host_sigue_en_500(cli, fake_rpc):
+    """La asimetria con `eventos_por_host` es deliberada: los eventos historicos
+    de una ventana son muchos mas que los problemas activos de un instante."""
+    cli.problemas_por_host("PRIMAVERA")
+    assert fake_rpc.params_de("problem.get")["limit"] == 500
